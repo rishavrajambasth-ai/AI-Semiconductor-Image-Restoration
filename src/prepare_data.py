@@ -1,139 +1,348 @@
 from pathlib import Path
-import random
 
 import cv2
 import numpy as np
 
 
-# Project folders
+# --------------------------------------------------
+# Project paths
+# --------------------------------------------------
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 DEGRADED_DIR = PROJECT_ROOT / "data" / "degraded"
 CLEAN_DIR = PROJECT_ROOT / "data" / "clean"
 
-# Supported image formats
-IMAGE_EXTENSIONS = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".bmp",
-    ".tif",
-    ".tiff",
-}
+
+# --------------------------------------------------
+# Settings
+# --------------------------------------------------
+
+IMAGE_SIZE = 256
 
 
-def add_degradation(image):
-    """
-    Create a degraded version of a clean image.
+# --------------------------------------------------
+# Create directories
+# --------------------------------------------------
 
-    Degradations:
-    1. Slight Gaussian blur
-    2. Gaussian noise
-    3. Small contrast/brightness variation
-    """
+def create_directories():
 
-    # 1. Random blur
-    kernel_size = random.choice([3, 5])
-
-    degraded = cv2.GaussianBlur(
-        image,
-        (kernel_size, kernel_size),
-        0
+    DEGRADED_DIR.mkdir(
+        parents=True,
+        exist_ok=True
     )
 
-    # 2. Add Gaussian noise
-    noise_strength = random.uniform(5.0, 20.0)
-
-    noise = np.random.normal(
-        0,
-        noise_strength,
-        degraded.shape
-    ).astype(np.float32)
-
-    degraded = degraded.astype(np.float32) + noise
-
-    # 3. Slight contrast and brightness change
-    alpha = random.uniform(0.85, 1.05)
-    beta = random.uniform(-10, 10)
-
-    degraded = alpha * degraded + beta
-
-    # Keep pixel values in valid range
-    degraded = np.clip(
-        degraded,
-        0,
-        255
-    ).astype(np.uint8)
-
-    return degraded
+    CLEAN_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
 
-def process_images():
-    """
-    Process all images inside data/raw.
-    """
+# --------------------------------------------------
+# Normalize NumPy image
+# --------------------------------------------------
 
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    DEGRADED_DIR.mkdir(parents=True, exist_ok=True)
-    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+def normalize_image(image):
 
-    image_files = [
-        file
-        for file in RAW_DIR.iterdir()
-        if file.is_file()
-        and file.suffix.lower() in IMAGE_EXTENSIONS
-    ]
+    image = np.asarray(image)
 
-    if not image_files:
-        print("No images found in:")
-        print(RAW_DIR)
-        print()
-        print("Put PNG/JPG images inside data/raw and run again.")
-        return
+    # Remove unnecessary dimensions
+    image = np.squeeze(image)
 
-    print(f"Found {len(image_files)} image(s).")
-    print()
+    # Convert to float
+    image = image.astype(np.float32)
 
-    for index, image_path in enumerate(image_files, start=1):
+    # Handle common data ranges
+    minimum = image.min()
+    maximum = image.max()
 
-        # Read image
-        image = cv2.imread(
-            str(image_path),
-            cv2.IMREAD_COLOR
+    if maximum > minimum:
+
+        image = (
+            image - minimum
+        ) / (
+            maximum - minimum
         )
 
-        if image is None:
-            print(f"[SKIP] Could not read: {image_path.name}")
-            continue
+    else:
 
-        # Create degraded image
-        degraded = add_degradation(image)
+        image = np.zeros_like(
+            image,
+            dtype=np.float32
+        )
 
-        # Output paths
-        clean_path = CLEAN_DIR / image_path.name
-        degraded_path = DEGRADED_DIR / image_path.name
+    image = (
+        image * 255.0
+    ).clip(
+        0,
+        255
+    ).astype(
+        np.uint8
+    )
 
-        # Save clean and degraded versions
+    return image
+
+
+# --------------------------------------------------
+# Convert array to image
+# --------------------------------------------------
+
+def array_to_image(array):
+
+    array = np.asarray(array)
+
+    array = np.squeeze(array)
+
+    # Grayscale image
+    if array.ndim == 2:
+
+        return normalize_image(array)
+
+    # Channel-first image: C,H,W
+    if array.ndim == 3 and array.shape[0] in (1, 3):
+
+        array = np.transpose(
+            array,
+            (1, 2, 0)
+        )
+
+    # Channel-last grayscale
+    if array.ndim == 3 and array.shape[2] == 1:
+
+        array = array[:, :, 0]
+
+    # RGB image
+    if array.ndim == 3 and array.shape[2] == 3:
+
+        image = normalize_image(array)
+
+        return cv2.cvtColor(
+            image,
+            cv2.COLOR_RGB2BGR
+        )
+
+    # Unknown format
+    raise ValueError(
+        f"Unsupported array shape: {array.shape}"
+    )
+
+
+# --------------------------------------------------
+# Process one NPY file
+# --------------------------------------------------
+
+def process_file(npy_path):
+
+    print()
+    print(
+        f"Processing: {npy_path.name}"
+    )
+
+    data = np.load(
+        npy_path,
+        allow_pickle=False
+    )
+
+    print(
+        "Original shape:",
+        data.shape
+    )
+
+    print(
+        "Data type:",
+        data.dtype
+    )
+
+    print(
+        "Minimum:",
+        data.min()
+    )
+
+    print(
+        "Maximum:",
+        data.max()
+    )
+
+    # --------------------------------------------------
+    # Case 1: Single image
+    # --------------------------------------------------
+
+    if data.ndim == 2:
+
+        image = array_to_image(data)
+
+        image = cv2.resize(
+            image,
+            (IMAGE_SIZE, IMAGE_SIZE)
+        )
+
+        output_name = (
+            npy_path.stem + ".png"
+        )
+
+        # For now, save as degraded.
+        # We will change this once we confirm
+        # the exact KLA dataset structure.
+        output_path = (
+            DEGRADED_DIR / output_name
+        )
+
         cv2.imwrite(
-            str(clean_path),
+            str(output_path),
             image
         )
 
+        print(
+            "Saved:",
+            output_path
+        )
+
+        return
+
+    # --------------------------------------------------
+    # Case 2: Multiple images
+    # --------------------------------------------------
+
+    if data.ndim == 3:
+
+        # Possible format:
+        # N,H,W
+        if (
+            data.shape[0] > 3
+            and data.shape[1] > 10
+            and data.shape[2] > 10
+        ):
+
+            for index in range(
+                data.shape[0]
+            ):
+
+                image = array_to_image(
+                    data[index]
+                )
+
+                image = cv2.resize(
+                    image,
+                    (IMAGE_SIZE, IMAGE_SIZE)
+                )
+
+                output_name = (
+                    f"{npy_path.stem}_{index:06d}.png"
+                )
+
+                output_path = (
+                    DEGRADED_DIR
+                    / output_name
+                )
+
+                cv2.imwrite(
+                    str(output_path),
+                    image
+                )
+
+                print(
+                    "Saved:",
+                    output_path
+                )
+
+            return
+
+        # Possible RGB image
+        image = array_to_image(data)
+
+        image = cv2.resize(
+            image,
+            (IMAGE_SIZE, IMAGE_SIZE)
+        )
+
+        output_name = (
+            npy_path.stem + ".png"
+        )
+
+        output_path = (
+            DEGRADED_DIR / output_name
+        )
+
         cv2.imwrite(
-            str(degraded_path),
-            degraded
+            str(output_path),
+            image
         )
 
         print(
-            f"[{index}/{len(image_files)}] "
-            f"Processed: {image_path.name}"
+            "Saved:",
+            output_path
         )
 
+        return
+
+    raise ValueError(
+        f"Unsupported NPY dimensions: "
+        f"{data.ndim}"
+    )
+
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+
+def main():
+
+    print("=" * 60)
+    print("KLA NPY DATA PREPARATION")
+    print("=" * 60)
+
+    create_directories()
+
+    npy_files = sorted(
+        RAW_DIR.glob("*.npy")
+    )
+
+    if not npy_files:
+
+        print()
+        print(
+            "No .npy files found in:"
+        )
+
+        print(RAW_DIR)
+
+        print()
+        print(
+            "Copy the KLA .npy files into:"
+        )
+
+        print(RAW_DIR)
+
+        return
+
     print()
-    print("Data preparation completed.")
-    print(f"Clean images:    {CLEAN_DIR}")
-    print(f"Degraded images: {DEGRADED_DIR}")
+    print(
+        f"Found {len(npy_files)} NPY file(s)."
+    )
+
+    for npy_path in npy_files:
+
+        try:
+
+            process_file(
+                npy_path
+            )
+
+        except Exception as error:
+
+            print()
+            print(
+                f"[ERROR] {npy_path.name}"
+            )
+
+            print(error)
+
+    print()
+    print("=" * 60)
+    print("DATA PREPARATION FINISHED")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
-    process_images()
+    main()
