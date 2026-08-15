@@ -10,9 +10,9 @@ AI-Powered Semiconductor Inspection Image Restoration with Defect-Preserving Enh
 ## Objective
 To develop an AI-based image restoration system that improves the quality of semiconductor inspection images while preserving important defects.
 
-## Team
-- Team Member 1:Rishav Raj Ambasth
-- Team Member 2:Sonu kumar
+## Team- MOSFET
+- Team Member 1: Rishav Raj Ambasth
+- Team Member 2: Sonu kumar
 
 ## Project Status
 Project under development..
