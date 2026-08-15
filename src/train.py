@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from model import ImageRestorationUNet
@@ -23,13 +24,16 @@ MODEL_PATH = MODEL_DIR / "restoration_model.pth"
 
 
 # --------------------------------------------------
-# Settings
+# Training settings
 # --------------------------------------------------
 
 IMAGE_SIZE = 256
 BATCH_SIZE = 4
 EPOCHS = 10
 LEARNING_RATE = 0.001
+
+# Weight given to edge/detail preservation
+EDGE_LOSS_WEIGHT = 0.20
 
 
 # --------------------------------------------------
@@ -61,7 +65,7 @@ class RestorationDataset(Dataset):
                 if clean_file.exists():
                     self.images.append(file)
 
-        if len(self.images) == 0:
+        if not self.images:
             raise RuntimeError(
                 "No matching degraded/clean image pairs found."
             )
@@ -89,7 +93,6 @@ class RestorationDataset(Dataset):
                 f"Could not read {degraded_path.name}"
             )
 
-        # Resize
         degraded = cv2.resize(
             degraded,
             (IMAGE_SIZE, IMAGE_SIZE)
@@ -100,7 +103,6 @@ class RestorationDataset(Dataset):
             (IMAGE_SIZE, IMAGE_SIZE)
         )
 
-        # OpenCV BGR -> RGB
         degraded = cv2.cvtColor(
             degraded,
             cv2.COLOR_BGR2RGB
@@ -111,16 +113,14 @@ class RestorationDataset(Dataset):
             cv2.COLOR_BGR2RGB
         )
 
-        # Convert [0,255] -> [0,1]
-        degraded = degraded.astype(
-            np.float32
-        ) / 255.0
+        degraded = (
+            degraded.astype(np.float32) / 255.0
+        )
 
-        clean = clean.astype(
-            np.float32
-        ) / 255.0
+        clean = (
+            clean.astype(np.float32) / 255.0
+        )
 
-        # HWC -> CHW
         degraded = np.transpose(
             degraded,
             (2, 0, 1)
@@ -131,17 +131,133 @@ class RestorationDataset(Dataset):
             (2, 0, 1)
         )
 
-        degraded = torch.tensor(
-            degraded,
-            dtype=torch.float32
+        return (
+            torch.tensor(
+                degraded,
+                dtype=torch.float32
+            ),
+            torch.tensor(
+                clean,
+                dtype=torch.float32
+            )
         )
 
-        clean = torch.tensor(
-            clean,
-            dtype=torch.float32
+
+# --------------------------------------------------
+# Sobel edge extraction
+# --------------------------------------------------
+
+def sobel_edges(image):
+    """
+    Calculate edge magnitude using Sobel filters.
+    """
+
+    # Convert RGB image to grayscale
+    gray = (
+        0.299 * image[:, 0:1]
+        + 0.587 * image[:, 1:2]
+        + 0.114 * image[:, 2:3]
+    )
+
+    sobel_x = torch.tensor(
+        [
+            [-1.0, 0.0, 1.0],
+            [-2.0, 0.0, 2.0],
+            [-1.0, 0.0, 1.0],
+        ],
+        device=image.device,
+        dtype=image.dtype
+    ).view(1, 1, 3, 3)
+
+    sobel_y = torch.tensor(
+        [
+            [-1.0, -2.0, -1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 1.0],
+        ],
+        device=image.device,
+        dtype=image.dtype
+    ).view(1, 1, 3, 3)
+
+    edge_x = F.conv2d(
+        gray,
+        sobel_x,
+        padding=1
+    )
+
+    edge_y = F.conv2d(
+        gray,
+        sobel_y,
+        padding=1
+    )
+
+    magnitude = torch.sqrt(
+        edge_x ** 2
+        + edge_y ** 2
+        + 1e-8
+    )
+
+    return magnitude
+
+
+# --------------------------------------------------
+# Defect-preserving loss
+# --------------------------------------------------
+
+class DefectPreservingLoss(nn.Module):
+
+    def __init__(
+        self,
+        edge_weight=0.20
+    ):
+
+        super().__init__()
+
+        self.edge_weight = edge_weight
+
+        self.pixel_loss = nn.L1Loss()
+
+    def forward(
+        self,
+        restored,
+        clean
+    ):
+
+        # Pixel reconstruction loss
+        reconstruction_loss = (
+            self.pixel_loss(
+                restored,
+                clean
+            )
         )
 
-        return degraded, clean
+        # Edge/detail loss
+        restored_edges = sobel_edges(
+            restored
+        )
+
+        clean_edges = sobel_edges(
+            clean
+        )
+
+        edge_loss = (
+            self.pixel_loss(
+                restored_edges,
+                clean_edges
+            )
+        )
+
+        # Combined loss
+        total_loss = (
+            reconstruction_loss
+            + self.edge_weight * edge_loss
+        )
+
+        return (
+            total_loss,
+            reconstruction_loss,
+            edge_loss
+        )
 
 
 # --------------------------------------------------
@@ -150,7 +266,6 @@ class RestorationDataset(Dataset):
 
 def train():
 
-    # Select device
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -159,15 +274,16 @@ def train():
 
     print("Using device:", device)
 
-    # Dataset
     dataset = RestorationDataset(
         DEGRADED_DIR,
         CLEAN_DIR
     )
 
-    print("Training images:", len(dataset))
+    print(
+        "Training images:",
+        len(dataset)
+    )
 
-    # DataLoader
     dataloader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
@@ -175,20 +291,23 @@ def train():
         num_workers=0
     )
 
-    # Model
-    model = ImageRestorationUNet().to(device)
+    model = ImageRestorationUNet().to(
+        device
+    )
 
-    # Loss
-    criterion = nn.MSELoss()
+    criterion = DefectPreservingLoss(
+        edge_weight=EDGE_LOSS_WEIGHT
+    )
 
-    # Optimizer
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE
     )
 
     print()
-    print("Starting training...")
+    print(
+        "Starting defect-preserving training..."
+    )
     print()
 
     for epoch in range(EPOCHS):
@@ -196,22 +315,27 @@ def train():
         model.train()
 
         total_loss = 0.0
+        total_reconstruction = 0.0
+        total_edge = 0.0
 
         for degraded, clean in dataloader:
 
             degraded = degraded.to(device)
             clean = clean.to(device)
 
-            # Forward pass
-            restored = model(degraded)
+            restored = model(
+                degraded
+            )
 
-            # Calculate loss
-            loss = criterion(
+            (
+                loss,
+                reconstruction_loss,
+                edge_loss
+            ) = criterion(
                 restored,
                 clean
             )
 
-            # Backpropagation
             optimizer.zero_grad()
 
             loss.backward()
@@ -219,31 +343,44 @@ def train():
             optimizer.step()
 
             total_loss += loss.item()
+            total_reconstruction += (
+                reconstruction_loss.item()
+            )
+            total_edge += (
+                edge_loss.item()
+            )
 
-        average_loss = (
-            total_loss / len(dataloader)
-        )
+        batches = len(dataloader)
 
         print(
             f"Epoch [{epoch + 1}/{EPOCHS}] "
-            f"Loss: {average_loss:.6f}"
+            f"Total Loss: "
+            f"{total_loss / batches:.6f} | "
+            f"Reconstruction: "
+            f"{total_reconstruction / batches:.6f} | "
+            f"Edge: "
+            f"{total_edge / batches:.6f}"
         )
 
-    # Create model directory
     MODEL_DIR.mkdir(
         parents=True,
         exist_ok=True
     )
 
-    # Save model
     torch.save(
         model.state_dict(),
         MODEL_PATH
     )
 
     print()
-    print("Training completed.")
-    print("Model saved to:")
+    print(
+        "Defect-preserving training completed."
+    )
+
+    print(
+        "Model saved to:"
+    )
+
     print(MODEL_PATH)
 
 
