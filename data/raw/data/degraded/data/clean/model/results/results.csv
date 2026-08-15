@@ -7,7 +7,7 @@ from skimage.metrics import structural_similarity
 
 
 # --------------------------------------------------
-# Project paths
+
 # --------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
