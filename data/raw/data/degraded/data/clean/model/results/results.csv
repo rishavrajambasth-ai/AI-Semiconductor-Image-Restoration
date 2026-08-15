@@ -1,1 +1,44 @@
+    with open(
+        RESULTS_CSV,
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as file:
 
+        writer = csv.writer(file)
+
+        writer.writerow([
+            "Method",
+            "Average PSNR (dB)",
+            "Average SSIM"
+        ])
+
+        for method, key in [
+            ("Degraded", "degraded"),
+            ("Traditional Baseline", "baseline"),
+            ("AI Model", "ai"),
+        ]:
+
+            if counts[key] == 0:
+                continue
+
+            psnr = (
+                total[f"{key}_psnr"]
+                / counts[key]
+            )
+
+            ssim = (
+                total[f"{key}_ssim"]
+                / counts[key]
+            )
+
+            writer.writerow([
+                method,
+                f"{psnr:.4f}",
+                f"{ssim:.4f}"
+            ])
+
+    print()
+    print(
+        f"Results saved to: {RESULTS_CSV}"
+    )
