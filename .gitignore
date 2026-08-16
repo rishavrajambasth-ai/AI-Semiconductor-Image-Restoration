@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# Generated restoration results
+results/baseline/
+results/outputs/
+results/restored/
+
+# Large input/output image datasets
+data/degraded/
+data/restored/
+
+# NumPy generated files
+*.npy
+
+# Temporary files
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
