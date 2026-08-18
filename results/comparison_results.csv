@@ -1,3 +1,4 @@
 Method,Average PSNR (dB),Average SSIM,Average LPIPS
 Degraded Input,69.1324,0.9998,0.0002
 Traditional Baseline,9.8440,0.0124,0.9089
+Our AI Model,60.5990,0.9894,0.0002

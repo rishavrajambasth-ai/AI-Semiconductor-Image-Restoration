@@ -28,12 +28,32 @@ MODEL_PATH = MODEL_DIR / "restoration_model.pth"
 # --------------------------------------------------
 
 IMAGE_SIZE = 256
+
+# Using batch size 1 for CPU testing
 BATCH_SIZE = 4
+
+# One epoch for testing training speed
 EPOCHS = 10
+
 LEARNING_RATE = 0.001
 
 # Weight given to edge/detail preservation
 EDGE_LOSS_WEIGHT = 0.20
+
+
+# --------------------------------------------------
+# Supported file extensions
+# --------------------------------------------------
+
+SUPPORTED_EXTENSIONS = {
+    ".npy",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tif",
+    ".tiff",
+}
 
 
 # --------------------------------------------------
@@ -42,104 +62,221 @@ EDGE_LOSS_WEIGHT = 0.20
 
 class RestorationDataset(Dataset):
 
-    def __init__(self, degraded_dir, clean_dir):
+    def __init__(
+        self,
+        degraded_dir,
+        clean_dir
+    ):
 
-        self.degraded_dir = Path(degraded_dir)
-        self.clean_dir = Path(clean_dir)
+        self.degraded_dir = Path(
+            degraded_dir
+        )
+
+        self.clean_dir = Path(
+            clean_dir
+        )
 
         self.images = []
 
         for file in self.degraded_dir.iterdir():
 
-            if file.suffix.lower() in {
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".bmp",
-                ".tif",
-                ".tiff",
-            }:
+            if (
+                file.suffix.lower()
+                in SUPPORTED_EXTENSIONS
+            ):
 
-                clean_file = self.clean_dir / file.name
+                clean_file = (
+                    self.clean_dir
+                    / file.name
+                )
 
                 if clean_file.exists():
-                    self.images.append(file)
+
+                    self.images.append(
+                        file
+                    )
+
+        self.images.sort()
 
         if not self.images:
+
             raise RuntimeError(
                 "No matching degraded/clean image pairs found."
             )
 
     def __len__(self):
+
         return len(self.images)
+
+    def load_file(self, path):
+
+        # --------------------------------------------------
+        # NumPy format
+        # --------------------------------------------------
+
+        if path.suffix.lower() == ".npy":
+
+            image = np.load(
+                path
+            )
+
+        # --------------------------------------------------
+        # Normal image formats
+        # --------------------------------------------------
+
+        else:
+
+            image = cv2.imread(
+                str(path),
+                cv2.IMREAD_COLOR
+            )
+
+        if image is None:
+
+            raise RuntimeError(
+                f"Could not read image: {path}"
+            )
+
+        return image
+
+    def prepare_image(self, image):
+
+        # --------------------------------------------------
+        # Handle grayscale images
+        # --------------------------------------------------
+
+        if image.ndim == 2:
+
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_GRAY2RGB
+            )
+
+        # --------------------------------------------------
+        # Handle channel-first NumPy arrays
+        # --------------------------------------------------
+
+        elif (
+            image.ndim == 3
+            and image.shape[0] in [1, 3]
+            and image.shape[2] not in [1, 3]
+        ):
+
+            image = np.transpose(
+                image,
+                (1, 2, 0)
+            )
+
+        # --------------------------------------------------
+        # Convert single-channel to RGB
+        # --------------------------------------------------
+
+        if (
+            image.ndim == 3
+            and image.shape[2] == 1
+        ):
+
+            image = np.repeat(
+                image,
+                3,
+                axis=2
+            )
+
+        # --------------------------------------------------
+        # Convert BGR to RGB
+        #
+        # For OpenCV images this is required.
+        # For .npy RGB arrays, this may already be RGB.
+        # --------------------------------------------------
+
+        if (
+            image.ndim == 3
+            and image.shape[2] == 3
+        ):
+
+            # Keep NumPy arrays as they are.
+            # OpenCV images are converted before normalization.
+            pass
+
+        # --------------------------------------------------
+        # Resize
+        # --------------------------------------------------
+
+        image = cv2.resize(
+            image,
+            (
+                IMAGE_SIZE,
+                IMAGE_SIZE
+            ),
+            interpolation=cv2.INTER_AREA
+        )
+
+        # --------------------------------------------------
+        # Convert data type
+        # --------------------------------------------------
+
+        image = image.astype(
+            np.float32
+        )
+
+        # --------------------------------------------------
+        # Normalize
+        # --------------------------------------------------
+
+        if image.max() > 1.0:
+
+            image = image / 255.0
+
+        image = np.clip(
+            image,
+            0.0,
+            1.0
+        )
+
+        # --------------------------------------------------
+        # HWC -> CHW
+        # --------------------------------------------------
+
+        image = np.transpose(
+            image,
+            (2, 0, 1)
+        )
+
+        return torch.tensor(
+            image,
+            dtype=torch.float32
+        )
 
     def __getitem__(self, index):
 
-        degraded_path = self.images[index]
-        clean_path = self.clean_dir / degraded_path.name
-
-        degraded = cv2.imread(
-            str(degraded_path),
-            cv2.IMREAD_COLOR
+        degraded_path = (
+            self.images[index]
         )
 
-        clean = cv2.imread(
-            str(clean_path),
-            cv2.IMREAD_COLOR
+        clean_path = (
+            self.clean_dir
+            / degraded_path.name
         )
 
-        if degraded is None or clean is None:
-            raise RuntimeError(
-                f"Could not read {degraded_path.name}"
-            )
-
-        degraded = cv2.resize(
-            degraded,
-            (IMAGE_SIZE, IMAGE_SIZE)
+        degraded = self.load_file(
+            degraded_path
         )
 
-        clean = cv2.resize(
-            clean,
-            (IMAGE_SIZE, IMAGE_SIZE)
+        clean = self.load_file(
+            clean_path
         )
 
-        degraded = cv2.cvtColor(
-            degraded,
-            cv2.COLOR_BGR2RGB
+        degraded = self.prepare_image(
+            degraded
         )
 
-        clean = cv2.cvtColor(
-            clean,
-            cv2.COLOR_BGR2RGB
-        )
-
-        degraded = (
-            degraded.astype(np.float32) / 255.0
-        )
-
-        clean = (
-            clean.astype(np.float32) / 255.0
-        )
-
-        degraded = np.transpose(
-            degraded,
-            (2, 0, 1)
-        )
-
-        clean = np.transpose(
-            clean,
-            (2, 0, 1)
+        clean = self.prepare_image(
+            clean
         )
 
         return (
-            torch.tensor(
-                degraded,
-                dtype=torch.float32
-            ),
-            torch.tensor(
-                clean,
-                dtype=torch.float32
-            )
+            degraded,
+            clean
         )
 
 
@@ -148,11 +285,13 @@ class RestorationDataset(Dataset):
 # --------------------------------------------------
 
 def sobel_edges(image):
+
     """
     Calculate edge magnitude using Sobel filters.
     """
 
     # Convert RGB image to grayscale
+
     gray = (
         0.299 * image[:, 0:1]
         + 0.587 * image[:, 1:2]
@@ -167,7 +306,12 @@ def sobel_edges(image):
         ],
         device=image.device,
         dtype=image.dtype
-    ).view(1, 1, 3, 3)
+    ).view(
+        1,
+        1,
+        3,
+        3
+    )
 
     sobel_y = torch.tensor(
         [
@@ -177,7 +321,12 @@ def sobel_edges(image):
         ],
         device=image.device,
         dtype=image.dtype
-    ).view(1, 1, 3, 3)
+    ).view(
+        1,
+        1,
+        3,
+        3
+    )
 
     edge_x = F.conv2d(
         gray,
@@ -224,6 +373,7 @@ class DefectPreservingLoss(nn.Module):
     ):
 
         # Pixel reconstruction loss
+
         reconstruction_loss = (
             self.pixel_loss(
                 restored,
@@ -232,6 +382,7 @@ class DefectPreservingLoss(nn.Module):
         )
 
         # Edge/detail loss
+
         restored_edges = sobel_edges(
             restored
         )
@@ -248,9 +399,11 @@ class DefectPreservingLoss(nn.Module):
         )
 
         # Combined loss
+
         total_loss = (
             reconstruction_loss
-            + self.edge_weight * edge_loss
+            + self.edge_weight
+            * edge_loss
         )
 
         return (
@@ -272,7 +425,39 @@ def train():
         else "cpu"
     )
 
-    print("Using device:", device)
+    print()
+    print("=" * 70)
+    print("DEFECT-PRESERVING AI TRAINING")
+    print("=" * 70)
+
+    print()
+    print(
+        "Using device:",
+        device
+    )
+
+    print(
+        "Image size:",
+        IMAGE_SIZE,
+        "x",
+        IMAGE_SIZE
+    )
+
+    print(
+        "Batch size:",
+        BATCH_SIZE
+    )
+
+    print(
+        "Epochs:",
+        EPOCHS
+    )
+
+    print()
+
+    # --------------------------------------------------
+    # Dataset
+    # --------------------------------------------------
 
     dataset = RestorationDataset(
         DEGRADED_DIR,
@@ -284,6 +469,10 @@ def train():
         len(dataset)
     )
 
+    # --------------------------------------------------
+    # DataLoader
+    # --------------------------------------------------
+
     dataloader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
@@ -291,24 +480,47 @@ def train():
         num_workers=0
     )
 
+    print(
+        "Batches per epoch:",
+        len(dataloader)
+    )
+
+    print()
+
+    # --------------------------------------------------
+    # Model
+    # --------------------------------------------------
+
     model = ImageRestorationUNet().to(
         device
     )
 
+    # --------------------------------------------------
+    # Loss
+    # --------------------------------------------------
+
     criterion = DefectPreservingLoss(
         edge_weight=EDGE_LOSS_WEIGHT
     )
+
+    # --------------------------------------------------
+    # Optimizer
+    # --------------------------------------------------
 
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE
     )
 
-    print()
     print(
         "Starting defect-preserving training..."
     )
+
     print()
+
+    # --------------------------------------------------
+    # Training loop
+    # --------------------------------------------------
 
     for epoch in range(EPOCHS):
 
@@ -318,14 +530,44 @@ def train():
         total_reconstruction = 0.0
         total_edge = 0.0
 
-        for degraded, clean in dataloader:
+        print(
+            f"Starting Epoch "
+            f"{epoch + 1}/{EPOCHS}"
+        )
 
-            degraded = degraded.to(device)
-            clean = clean.to(device)
+        print()
+
+        for batch_index, (
+            degraded,
+            clean
+        ) in enumerate(
+            dataloader,
+            start=1
+        ):
+
+            print(
+                f"Processing batch "
+                f"{batch_index}/{len(dataloader)}...",
+                flush=True
+            )
+
+            # Move data to device
+
+            degraded = degraded.to(
+                device
+            )
+
+            clean = clean.to(
+                device
+            )
+
+            # Forward pass
 
             restored = model(
                 degraded
             )
+
+            # Calculate loss
 
             (
                 loss,
@@ -336,31 +578,96 @@ def train():
                 clean
             )
 
+            # Clear gradients
+
             optimizer.zero_grad()
+
+            # Backward pass
 
             loss.backward()
 
+            # Update model
+
             optimizer.step()
 
-            total_loss += loss.item()
+            # Accumulate losses
+
+            total_loss += (
+                loss.item()
+            )
+
             total_reconstruction += (
                 reconstruction_loss.item()
             )
+
             total_edge += (
                 edge_loss.item()
             )
 
-        batches = len(dataloader)
+            print(
+                f"Completed batch "
+                f"{batch_index}/{len(dataloader)} | "
+                f"Loss={loss.item():.6f}",
+                flush=True
+            )
+
+            print()
+
+        # --------------------------------------------------
+        # Epoch averages
+        # --------------------------------------------------
+
+        batches = len(
+            dataloader
+        )
+
+        average_loss = (
+            total_loss / batches
+        )
+
+        average_reconstruction = (
+            total_reconstruction
+            / batches
+        )
+
+        average_edge = (
+            total_edge
+            / batches
+        )
+
+        print(
+            "=" * 70
+        )
 
         print(
             f"Epoch [{epoch + 1}/{EPOCHS}] "
-            f"Total Loss: "
-            f"{total_loss / batches:.6f} | "
-            f"Reconstruction: "
-            f"{total_reconstruction / batches:.6f} | "
-            f"Edge: "
-            f"{total_edge / batches:.6f}"
+            f"completed"
         )
+
+        print(
+            f"Total Loss: "
+            f"{average_loss:.6f}"
+        )
+
+        print(
+            f"Reconstruction Loss: "
+            f"{average_reconstruction:.6f}"
+        )
+
+        print(
+            f"Edge Loss: "
+            f"{average_edge:.6f}"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print()
+
+    # --------------------------------------------------
+    # Save model
+    # --------------------------------------------------
 
     MODEL_DIR.mkdir(
         parents=True,
@@ -373,6 +680,8 @@ def train():
     )
 
     print()
+    print("=" * 70)
+
     print(
         "Defect-preserving training completed."
     )
@@ -381,7 +690,11 @@ def train():
         "Model saved to:"
     )
 
-    print(MODEL_PATH)
+    print(
+        MODEL_PATH
+    )
+
+    print("=" * 70)
 
 
 # --------------------------------------------------
@@ -389,4 +702,5 @@ def train():
 # --------------------------------------------------
 
 if __name__ == "__main__":
+
     train()
