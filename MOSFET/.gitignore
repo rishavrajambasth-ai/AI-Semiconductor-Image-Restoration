@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Generated test outputs
+test_output_256/
+submission_test/
+
+# Other generated outputs
+test_output/
+test_output_degraded/
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
